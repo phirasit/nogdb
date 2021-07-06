@@ -1,76 +1,87 @@
 /*
- *  Copyright (C) 2018, Throughwave (Thailand) Co., Ltd.
- *  <peerawich at throughwave dot co dot th>
+ *  Copyright (C) 2019, NogDB <https://nogdb.org>
+ *  <nogdb at throughwave dot co dot th>
  *
  *  This file is part of libnogdb, the NogDB core library in C++.
  *
  *  libnogdb is free software: you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
+ *  it under the terms of the GNU Affero General Public License as published by
  *  the Free Software Foundation, either version 3 of the License, or
  *  (at your option) any later version.
  *
  *  This program is distributed in the hope that it will be useful,
  *  but WITHOUT ANY WARRANTY; without even the implied warranty of
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
+ *  GNU Affero General Public License for more details.
  *
- *  You should have received a copy of the GNU General Public License
+ *  You should have received a copy of the GNU Affero General Public License
  *  along with this program. If not, see <http://www.gnu.org/licenses/>.
  *
  */
 
-#ifndef __VALIDATE_HPP_INCLUDED_
-#define __VALIDATE_HPP_INCLUDED_
+#pragma once
 
-#include "schema.hpp"
-#include "base_txn.hpp"
+#include "constant.hpp"
+#include <regex>
 
-#include "nogdb_errors.h"
-#include "nogdb_context.h"
-#include "nogdb_types.h"
-#include "nogdb_txn.h"
+#include "nogdb/nogdb.h"
+#include "nogdb/nogdb_errors.h"
+
+#define BEGIN_VALIDATION(_txn) nogdb::validate::Validator(_txn)
+#define CLASS_ID_UPPER_LIMIT UINT16_MAX - 1
 
 namespace nogdb {
-    struct Validate {
-        Validate() = delete;
+namespace validate {
+    using namespace adapter::schema;
 
-        ~Validate() noexcept = delete;
+    class Validator {
+    public:
+        Validator(const Transaction* txn)
+            : _txn { txn }
+        {
+        }
 
-        static void isTransactionValid(const Txn &txn);
+        virtual ~Validator() noexcept = default;
 
-        static void isClassNameValid(const std::string &className);
+        Validator& isTxnValid();
 
-        static void isPropertyNameValid(const std::string &propName);
+        Validator& isTxnCompleted();
 
-        static bool isNameValid(const std::string& name);
+        Validator& isClassIdMaxReach();
 
-        static void isClassTypeValid(const ClassType &type);
+        Validator& isPropertyIdMaxReach();
 
-        static void isPropertyTypeValid(const PropertyType &type);
+        Validator& isIndexIdMaxReach();
 
-        static void isNotDuplicatedClass(const Txn &txn, const std::string &className);
+        Validator& isClassNameValid(const std::string& className);
 
-        static std::shared_ptr<Schema::ClassDescriptor> isExistingClass(const Txn &txn, const std::string &className);
+        Validator& isPropertyNameValid(const std::string& propName);
 
-        static std::shared_ptr<Schema::ClassDescriptor> isExistingClass(const Txn &txn, const ClassId &classId);
+        Validator& isClassTypeValid(const ClassType& type);
 
-        static void isNotDuplicatedProperty(const BaseTxn &txn,
-                                            const std::shared_ptr<Schema::ClassDescriptor> &classDescriptor,
-                                            const std::string &propertyName);
+        Validator& isPropertyTypeValid(const PropertyType& type);
 
-        static Schema::PropertyDescriptor isExistingProperty(const BaseTxn &txn,
-                                                             const std::shared_ptr<Schema::ClassDescriptor> &classDescriptor,
-                                                             const std::string &propertyName);
+        Validator& isNotDuplicatedClass(const std::string& className);
 
-        static std::pair<ClassId, Schema::PropertyDescriptor>
-        isExistingPropertyExtend(const BaseTxn &txn,
-                                 const std::shared_ptr<Schema::ClassDescriptor> &classDescriptor,
-                                 const std::string &propertyName);
+        Validator& isNotDuplicatedProperty(const ClassId& classId, const std::string& propertyName);
 
-        static void isNotOverridenProperty(const BaseTxn &txn,
-                                           const std::shared_ptr<Schema::ClassDescriptor> &classDescriptor,
-                                           const std::string &propertyName);
+        Validator& isNotOverriddenProperty(const ClassId& classId, const std::string& propertyName);
+
+        Validator& isExistingSrcVertex(const RecordDescriptor& vertex);
+
+        Validator& isExistingDstVertex(const RecordDescriptor& vertex);
+
+        Validator& isExistingVertex(const RecordDescriptor& vertex);
+
+        Validator& isExistingVertices(const std::set<RecordDescriptor>& vertices);
+
+    private:
+        const Transaction* _txn;
+
+        inline static bool isNameValid(const std::string& name)
+        {
+            return std::regex_match(name, GLOBAL_VALID_NAME_PATTERN);
+        }
     };
 }
-
-#endif
+}

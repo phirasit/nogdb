@@ -1,20 +1,20 @@
 /*
- *  Copyright (C) 2018, Throughwave (Thailand) Co., Ltd.
- *  <kasidej dot bu at throughwave dot co dot th>
+ *  Copyright (C) 2019, NogDB <https://nogdb.org>
+ *  <nogdb at throughwave dot co dot th>
  *
  *  This file is part of libnogdb, the NogDB core library in C++.
  *
  *  libnogdb is free software: you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
+ *  it under the terms of the GNU Affero General Public License as published by
  *  the Free Software Foundation, either version 3 of the License, or
  *  (at your option) any later version.
  *
  *  This program is distributed in the hope that it will be useful,
  *  but WITHOUT ANY WARRANTY; without even the implied warranty of
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
+ *  GNU Affero General Public License for more details.
  *
- *  You should have received a copy of the GNU General Public License
+ *  You should have received a copy of the GNU Affero General Public License
  *  along with this program. If not, see <http://www.gnu.org/licenses/>.
  *
  */
@@ -45,6 +45,7 @@
 using namespace std;
 using namespace nogdb::sql_parser;
 
+using nogdb::RecordDescriptor;
 using nogdb::MultiCondition;
 
 #define LEMON_SUPER Context
@@ -52,7 +53,7 @@ using nogdb::MultiCondition;
 } // %include
 
 %code {
-unique_ptr<Context> Context::create(Txn &txn) {
+unique_ptr<Context> Context::create(Transaction &txn) {
     return unique_ptr<yypParser>(new yypParser(txn));
 }
 
@@ -120,7 +121,7 @@ cmd ::= create_edge_stmt(s) SEMI. {
 
 %type create_edge_stmt { CreateEdgeArgs }
 create_edge_stmt(A) ::= CREATE EDGE name(name) FROM select_target_without_class(src) TO select_target_without_class(dest) props_opt(prop). {
-    A = CreateEdgeArgs(name, move(src), move(dest), move(prop));
+    A = CreateEdgeArgs{name.toString(), move(src), move(dest), move(prop)};
 }
 
 
@@ -131,7 +132,7 @@ cmd ::= select_stmt(stmt) SEMI. {
 
 %type select_stmt { SelectArgs }
 select_stmt(A) ::= SELECT projections(proj) from_opt(from) where_opt(where) group_by(group) order_by(order) skip(skip) limit(limit). {
-    A = SelectArgs(move(proj), move(from), move(where), group, order, skip, limit);
+    A = SelectArgs{move(proj), move(from), move(where), group, order, skip, limit};
 }
 
 // projections
@@ -186,6 +187,13 @@ proj_item(A) ::= STRING(X) LB integer(index) RB. {
             make_shared<pair<Projection, unsigned long>>(
                 Projection(ProjectionType::PROPERTY, make_shared<string>(X.toString())),
                 stoull(string(index.z, index.n))));
+}
+proj_item(A) ::= IDENTITY(fName) LP projections(fArgs) RP LB cond(c) RB. {
+    A = Projection(
+        ProjectionType::CONDITION,
+        make_shared<pair<Projection, Condition>>(
+            Projection(ProjectionType::FUNCTION, make_shared<Function>(fName.toString(), move(fArgs))),
+            c));
 }
 
 // from_opt
@@ -255,7 +263,7 @@ cmd ::= update_stmt(stmt) SEMI. {
 
 %type update_stmt { UpdateArgs }
 update_stmt(A) ::= UPDATE select_target(target) props_opt(prop) where_opt(where). {
-    A = UpdateArgs(move(target), move(prop), move(where));
+    A = UpdateArgs{move(target), move(prop), move(where)};
 }
 
 
@@ -266,7 +274,7 @@ cmd ::= delete_vertex_stmt(stmt) SEMI. {
 
 %type delete_vertex_stmt { DeleteVertexArgs }
 delete_vertex_stmt(A) ::= DELETE VERTEX select_target(target) where_opt(where). {
-    A = DeleteVertexArgs(move(target), move(where));
+    A = DeleteVertexArgs{move(target), move(where)};
 }
 
 
@@ -278,11 +286,11 @@ cmd ::= delete_edge_stmt(stmt) SEMI. {
 %type delete_edge_stmt  { DeleteEdgeArgs }
 delete_edge_stmt(A) ::= DELETE EDGE select_target_rids(rids). {
     auto target = Target(TargetType::RIDS, make_shared<RecordDescriptorSet>(move(rids)));
-    A = DeleteEdgeArgs(move(target), Target(), Target(), Where());
+    A = DeleteEdgeArgs{move(target), Target(), Target(), Where()};
 }
 delete_edge_stmt(A) ::= DELETE EDGE name(name) from_edge_opt(from) to_edge_opt(to) where_opt(where). {
     auto target = Target(TargetType::CLASS, make_shared<string>(name.toString()));
-    A = DeleteEdgeArgs(move(target), move(from), move(to), move(where));
+    A = DeleteEdgeArgs{move(target), move(from), move(to), move(where)};
 }
 
 %type from_edge_opt { Target }
@@ -302,7 +310,7 @@ cmd ::= traverse_stmt(stmt) SEMI. {
 %type traverse_stmt { TraverseArgs }
 traverse_stmt(A) ::= TRAVERSE
     IDENTITY(direction) LP class_filter(filter) RP
-    FROM rid(root)
+    FROM rid_set(root)
     min_depth_opt(min_depth) max_depth_opt(max_depth)
     strategy_opt(strategy).
 {
@@ -324,6 +332,21 @@ max_depth_opt(A) ::= MAXDEPTH integer(X). { A = stoll(string(X.z, X.n)); }
 %type strategy_opt { string }
 strategy_opt(A) ::= . { A = "DEPTH_FIRST"; }
 strategy_opt(A) ::= STRATEGY IDENTITY(X). { A = X.toString(); }
+
+//////////////////// The INDEX command ////////////////////
+// CREATE
+cmd ::= CREATE INDEX name(className) DOT name(propName) index_type(type) SEMI. {
+    this->createIndex(className, propName, type);
+}
+
+// DROP
+cmd ::= DROP INDEX name(className) DOT name(propName) SEMI. {
+    this->dropIndex(className, propName);
+}
+
+
+index_type ::= .
+index_type(A) ::= IDENTITY(X). { A = X; }
 
 
 //////////////////// Other options ////////////////////
@@ -353,7 +376,9 @@ prop_name(A) ::= AT(X) IDENTITY(Y). { A = string(X.z, (Y.z + Y.n) - X.z); }
 
 // RID
 %type rid { RecordDescriptor }
-rid(A) ::= SHARP integer(class_id) COLON integer(pos_id). { A = RecordDescriptor(class_id, pos_id); }
+rid(A) ::= SHARP integer(class_id) COLON integer(pos_id). {
+    A = RecordDescriptor(stoi(string(class_id.z, class_id.n)), stoi(string(pos_id.z, pos_id.n)));
+}
 
 
 //////////////////// List/Set ////////////////////
@@ -386,6 +411,8 @@ multi_cond(A) ::= multi_cond(X) AND multi_cond(Y). { A = make_shared<MultiCondit
 multi_cond(A) ::= multi_cond(X) OR multi_cond(Y). { A = make_shared<MultiCondition>(*X || *Y); }
 multi_cond(A) ::= multi_cond(X) AND cond(Y). { A = make_shared<MultiCondition>(*X && Y); }
 multi_cond(A) ::= multi_cond(X) OR cond(Y). { A = make_shared<MultiCondition>(*X || Y); }
+multi_cond(A) ::= cond(X) AND multi_cond(Y). { A = make_shared<MultiCondition>(X && *Y); }
+multi_cond(A) ::= cond(X) OR multi_cond(Y). { A = make_shared<MultiCondition>(X || *Y); }
 multi_cond(A) ::= cond(X) AND cond(Y). { A = make_shared<MultiCondition>(X && Y); }
 multi_cond(A) ::= cond(X) OR cond(Y). { A = make_shared<MultiCondition>(X || Y); }
 multi_cond(A) ::= NOT multi_cond(X). { A = make_shared<MultiCondition>(!(*X)); }

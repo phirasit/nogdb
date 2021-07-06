@@ -1,161 +1,108 @@
 /*
- *  Copyright (C) 2018, Throughwave (Thailand) Co., Ltd.
- *  <peerawich at throughwave dot co dot th>
+ *  Copyright (C) 2019, NogDB <https://nogdb.org>
+ *  <nogdb at throughwave dot co dot th>
  *
  *  This file is part of libnogdb, the NogDB core library in C++.
  *
  *  libnogdb is free software: you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
+ *  it under the terms of the GNU Affero General Public License as published by
  *  the Free Software Foundation, either version 3 of the License, or
  *  (at your option) any later version.
  *
  *  This program is distributed in the hope that it will be useful,
  *  but WITHOUT ANY WARRANTY; without even the implied warranty of
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
+ *  GNU Affero General Public License for more details.
  *
- *  You should have received a copy of the GNU General Public License
+ *  You should have received a copy of the GNU Affero General Public License
  *  along with this program. If not, see <http://www.gnu.org/licenses/>.
  *
  */
 
-#ifndef __SCHEMA_HPP_INCLUDED_
-#define __SCHEMA_HPP_INCLUDED_
+#pragma once
 
-#include <map>
-#include <memory>
+#include <vector>
 
-#include "spinlock.hpp"
-#include "concurrent.hpp"
-#include "graph.hpp"
+#include "schema_adapter.hpp"
+#include "validate.hpp"
 
-#include "nogdb_types.h"
+#include "nogdb/nogdb.h"
+#include "nogdb/nogdb_types.h"
 
 namespace nogdb {
+namespace schema {
+    using namespace adapter::schema;
 
-    class BaseTxn;
+    struct SchemaUtils {
 
-    struct Schema {
-        Schema() = default;
+        static ClassAccessInfo getExistingClass(const Transaction *txn, const std::string& className);
 
-        ~Schema() noexcept = default;
+        static ClassAccessInfo getExistingClass(const Transaction *txn, const ClassId& classId);
 
-        typedef std::multimap<ClassId, std::pair<IndexId, bool>> IndexInfo;
+        static PropertyAccessInfo getExistingProperty(const Transaction *txn,
+            const ClassId& classId,
+            const std::string& propertyName);
 
-        struct PropertyDescriptor {
-            PropertyDescriptor() = default;
+        static PropertyAccessInfo getExistingPropertyExtend(const Transaction *txn,
+            const ClassId& classId,
+            const std::string& propertyName);
 
-            PropertyDescriptor(PropertyId id_, PropertyType type_) : id{id_}, type{type_} {}
-
-            nogdb::PropertyDescriptor transform() const {
-                auto toIndexInfo = nogdb::IndexInfo{};
-                for (const auto &index: indexInfo) {
-                    toIndexInfo.emplace(index.second.first, std::make_pair(index.first, index.second.second));
+        template <typename T>static ClassAccessInfo getValidClassInfo(const Transaction *txn,
+            const T& classSearchKey,
+            ClassType type = ClassType::UNDEFINED)
+        {
+            auto foundClass = getExistingClass(txn, classSearchKey);
+            if (type != ClassType::UNDEFINED) {
+                if (foundClass.type != type) {
+                    throw NOGDB_CONTEXT_ERROR(NOGDB_CTX_MISMATCH_CLASSTYPE);
                 }
-                return nogdb::PropertyDescriptor{id, type, toIndexInfo};
             }
-
-            PropertyId id{0};
-            PropertyType type{PropertyType::UNDEFINED};
-            IndexInfo indexInfo{};
-        };
-
-        typedef std::map<std::string, PropertyDescriptor> ClassProperty;
-        typedef std::vector<std::pair<ClassId, ClassId>> InheritanceInfo;
-
-        template<typename Key, typename T>
-        using SchemaElements = std::map<Key, std::shared_ptr<T>>;
-
-        template<typename Key, typename T>
-        using ConcurrentSchemaElements = ConcurrentHashMap<SchemaElements<Key, T>, Key, T>;
-
-        struct ClassDescriptor : public TxnObject {
-            ClassDescriptor() = default;
-
-            ClassDescriptor(const ClassId id_, const std::string &name_, ClassType type_)
-                    : id{id_}, type{type_} {
-                name.addLatestVersion(name_);
-            }
-
-            nogdb::ClassDescriptor transform(const BaseTxn &txn) const;
-
-            friend bool operator<(const ClassDescriptor &lhs, const ClassDescriptor &rhs) {
-                return lhs.id < rhs.id;
-            }
-
-            ClassId id{0};
-            VersionControl<std::string> name{};
-            ClassType type{ClassType::UNDEFINED};
-            VersionControl<ClassProperty> properties{};
-            VersionControl<std::weak_ptr<ClassDescriptor>> super{};
-            VersionControl<std::vector<std::weak_ptr<ClassDescriptor>>> sub{};
-        };
-
-        typedef std::shared_ptr<ClassDescriptor> ClassDescriptorPtr;
-
-        ConcurrentSchemaElements<ClassId, ClassDescriptor> schemaInfo;
-        ConcurrentDeleteQueue<ClassId> deletedClassId;
-
-        std::map<std::string, std::weak_ptr<ClassDescriptor>> getNameToDescMapping(const BaseTxn &txn);
-
-        void insert(BaseTxn &txn, const ClassDescriptorPtr &classDescriptor);
-
-        void replace(BaseTxn &txn, const ClassDescriptorPtr &classDescriptor, const std::string &newClassName);
-
-        ClassDescriptorPtr find(const BaseTxn &txn, const std::string &className);
-
-        ClassDescriptorPtr find(const BaseTxn &txn, const ClassId &classId);
-
-        void erase(BaseTxn &baseTxn, const ClassId &classId) noexcept;
-
-        void forceDelete(const std::vector<ClassId> &classId) noexcept;
-
-        void clear() noexcept;
-
-        void addProperty(BaseTxn &txn,
-                         const ClassId &classId,
-                         const std::string &propertyName,
-                         const PropertyDescriptor &propertyDescriptor);
-
-        void addProperty(BaseTxn &txn, const ClassId &classId, const ClassProperty &classProperty);
-
-        void deleteProperty(BaseTxn &txn, const ClassId &classId, const std::string &propertyName);
-
-        void updateProperty(BaseTxn &txn, const ClassId &classId, const std::string &oldPropertyName,
-                            const std::string &newPropertyName);
-
-        void updateProperty(BaseTxn &txn, const ClassId &classId, const std::string &propertyName,
-                            const PropertyDescriptor &propertyDescriptor);
-
-        void apply(BaseTxn &txn, const InheritanceInfo &info);
-
-        inline void clearDeletedElements(TxnId versionId) {
-            forceDelete(deletedClassId.pop_front(versionId));
-        }
-    };
-
-    struct ClassPropertyInfo {
-        void insert(PropertyId propertyId, const std::string &propertyName, PropertyType type) {
-            idToName.emplace(std::make_pair(propertyId, propertyName));
-            nameToDesc.emplace(std::make_pair(propertyName, PropertyDescriptor{propertyId, type}));
+            return foundClass;
         }
 
-        void insert(const std::string &propertyName, const Schema::PropertyDescriptor &propertyDescriptor) {
-            idToName.emplace(std::make_pair(propertyDescriptor.id, propertyName));
-            nameToDesc.emplace(std::make_pair(propertyName, propertyDescriptor.transform()));
+        static std::map<std::string, ClassAccessInfo> getSubClassInfos(const Transaction *txn, const ClassId& classId);
+
+        static std::vector<PropertyAccessInfo> getNativePropertyInfo(const Transaction *txn, const ClassId& classId);
+
+        static std::vector<PropertyAccessInfo> getInheritPropertyInfo(const Transaction *txn,
+            const ClassId& superClassId,
+            const std::vector<PropertyAccessInfo>& result);
+
+        static PropertyNameMapInfo getPropertyNameMapInfo(const Transaction *txn,
+            const ClassId& classId, const ClassId& superClassId);
+
+        static PropertyIdMapInfo getPropertyIdMapInfo(const Transaction *txn,
+            const ClassId& classId,
+            const ClassId& superClassId);
+
+        static IndexAccessInfo getIndexInfo(const Transaction *txn,
+            const ClassId& classId,
+            const PropertyId& propertyId);
+
+    private:
+
+        static inline PropertyNameMapInfo& addBasicInfo(PropertyNameMapInfo& propertyInfo)
+        {
+            propertyInfo[CLASS_NAME_PROPERTY] = PropertyAccessInfo(
+                0, CLASS_NAME_PROPERTY, CLASS_NAME_PROPERTY_ID, PropertyType::TEXT);
+            propertyInfo[RECORD_ID_PROPERTY] = PropertyAccessInfo(
+                0, RECORD_ID_PROPERTY, RECORD_ID_PROPERTY_ID, PropertyType::UNSIGNED_SMALLINT);
+            propertyInfo[DEPTH_PROPERTY] = PropertyAccessInfo(
+                0, DEPTH_PROPERTY, DEPTH_PROPERTY_ID, PropertyType::UNSIGNED_SMALLINT);
+            return propertyInfo;
         }
 
-        std::map<PropertyId, std::string> idToName{};
-        ClassProperty nameToDesc{};
+        static inline PropertyIdMapInfo& addBasicInfo(PropertyIdMapInfo& propertyInfo)
+        {
+            propertyInfo[CLASS_NAME_PROPERTY_ID] = PropertyAccessInfo(
+                0, CLASS_NAME_PROPERTY, CLASS_NAME_PROPERTY_ID, PropertyType::TEXT);
+            propertyInfo[RECORD_ID_PROPERTY_ID] = PropertyAccessInfo(
+                0, RECORD_ID_PROPERTY, RECORD_ID_PROPERTY_ID, PropertyType::UNSIGNED_SMALLINT);
+            propertyInfo[DEPTH_PROPERTY_ID] = PropertyAccessInfo(
+                0, DEPTH_PROPERTY, DEPTH_PROPERTY_ID, PropertyType::UNSIGNED_SMALLINT);
+            return propertyInfo;
+        }
     };
-
-    struct ClassInfo {
-        ClassId id;
-        std::string name;
-        ClassPropertyInfo propertyInfo;
-    };
-
 
 }
-
-#endif
+}
